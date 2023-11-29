@@ -1,5 +1,5 @@
 ---
-title: "Crime in ungary"
+title: "Crime in Hungary"
 author: "Tamás Nagy"
 date: "`r Sys.Date()`"
 output: html_document
@@ -7,45 +7,67 @@ editor_options:
   chunk_output_type: console
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-library(tidyverse)
-library(rvest)
-library(magrittr)
-library(broom)
-library(here)
+In this project, we will explore yearly crime statistics from Hungary between 2009 and 2022.
 
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Loading the necessary packages
+library(tidyverse)
+library(rvest) # webscraping
+library(magrittr) # for getting objects out of lists
+library(broom) # tidy model outputs
+
+# Setting the theme for plots
 theme_set(theme_light())
 
 ```
 
+# Getting the data
+
+We are using the official statistics from the Hungarian Statistics Office. It is on a homepage, that we scrape uing the rvest package.
 
 ```{r}
 crime_url <- "https://www.ksh.hu/stadat_files/iga/hu/iga0003.html"
 
+# Get the raw data from the web
 crime_raw <- 
-    read_html(crime_url) |> 
+    read_html(crime_url) |>
+    # The table has a double header. This causes some trouble with variable names.
+    # It is better to read all data with both headers, but not as a header but values
     html_table(header = FALSE) |> 
+    # the magrittr package has this function to extract the dataframe from the list that rvest returned
     extract2(1)
 
+# These are the original caterories in Hungarian
+# I used the clipr extension of RStudio to copy the results of this following part to the clipboard
 crime_raw |> 
     slice(2) |> 
     unlist() |> 
     unname()
 
+# I pasted it to deepl to machine translate the category names. 
+# I created and saved a text file that contains the English category names.
+
 crime_header <- read_lines(here::here("eng_header.txt"))
 
+# Now I can combine the raw data with the English header names
 crime_wide <- 
     crime_raw |> 
     set_names(crime_header) |> 
+    # Remove the first 2 rows (they are the headers)
     slice(-(1:2)) |> 
+    # Change every variable to numeric. Note that they where characters previously.
+    # I also have to remove the space first before converting to numeric.
     mutate(across(everything(), ~str_remove(., " ") |> as.numeric()))
 
+# Create a long format dataset as well
 crime_long <- 
     crime_wide |> 
     pivot_longer(-Year)
 
 ```
+
 
 
 ```{r}
@@ -54,16 +76,19 @@ crime_long |>
     ggplot() +
     aes(x = Year, y = value, color = name) +
     geom_line(show.legend = FALSE, linewidth = 1.1) +
+    # Show linear trends
     geom_smooth(method = "lm", show.legend = FALSE) +
     facet_wrap(~name, scales = "free_y") +
-    scale_y_continuous(labels = scales::comma_format())
+    scale_y_continuous(labels = scales::comma_format()) +
+    labs(y = NULL, title = "Changes")
     
 
 ```
 
+Looking at trends for individual categories
 
 ```{r}
-
+# Create specific datasets for individual regression analyses
 dui <- 
     crime_long |> 
     filter(name == "drink/driving")
@@ -78,6 +103,8 @@ drug <-
 
 ```
 
+Fitting linear regressions for each of the three selected categories.
+If we use the scale function, we will get standardized coefficients, that can be interpreted as correlations.
 
 ```{r}
 
@@ -90,8 +117,9 @@ lm(scale(value) ~ scale(Year), data = total) |>
 lm(scale(value) ~ scale(Year), data = drug) |> 
     summary()
 
-
 ```
+
+Fitting polynomial regression on the DUI data. We use the `poly()` function to include second and third order polinomials as predictors.
 
 ```{r}
 dui_model <- 
@@ -100,8 +128,14 @@ dui_model <-
 
 summary(dui_model)
 
+# The tidy function returns the coefficients as a data frame.
 tidy(dui_model, conf.int = TRUE)
+```
 
+We can create predictions for the model using the `augment()` function from the `{broom}` package. if we use original data as new data, we can also include the original preditcors. 
+We can visualize the model predictions based on the model predictions.
+
+```{r}
 augment(dui_model, 
         newdata = dui,
         interval = "confidence") |> 
@@ -112,22 +146,35 @@ augment(dui_model,
 
 ```
 
-```{r}
 
+## Automate modeling
+
+We can also fit models to all separate outcomes in a few lines of code. R is a functional programming language that makes this easy, through the `map()` functions (that is part of `{tidyverse}`).
+
+```{r}
 crime_nested <-
     crime_long |> 
     group_by(name) |> 
+    # Nesting the dataframe by names create separate small dataframes inside the dataframe
     nest() |> 
+    # We use the map function to interate through our large tibble and reach into the small tibbles inside, to fit a linear regression on each outcome. The result can be stored in a new variable inside the large tibble.
     mutate(model = map(data, ~lm(scale(value) ~ poly(Year, 3), data = .x)),
            tidy_model = map(model, tidy, conf.int = TRUE)
            ) |> 
     ungroup()
 
+# This is how you can reach data data
 crime_nested |> 
     filter(name == "criminal mischief") |> 
     unnest(data)
+```
 
-# Which categories have the stronges linear trends
+Which categories have the strongest linear, quadratic, and cubic trends?
+
+We arrange the data by the size of the coefficient for the appropriate polynomial term to see which trends are the strongest for each category.
+
+```{r}
+
 crime_nested |> 
     unnest(tidy_model) |> 
     select(-data, -model) |> 
