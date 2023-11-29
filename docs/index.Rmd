@@ -9,14 +9,14 @@ editor_options:
 
 In this project, we will explore yearly crime statistics from Hungary between 2009 and 2022.
 
-```{r setup}
-knitr::opts_chunk$set(echo = TRUE)
-
+```{r setup, results='hide', message=FALSE}
 # Loading the necessary packages
 library(tidyverse)
-library(rvest) # webscraping
+library(rvest) # for webscraping
 library(magrittr) # for getting objects out of lists
 library(broom) # tidy model outputs
+library(performance) # for model evaluation
+library(tidytext) # for ordering factors within larger categories (only needed for pretty plotting)
 
 # Setting the theme for plots
 theme_set(theme_light())
@@ -25,7 +25,7 @@ theme_set(theme_light())
 
 # Getting the data
 
-We are using the official statistics from the Hungarian Statistics Office. It is on a homepage, that we scrape uing the rvest package.
+We are using the official statistics from the Hungarian Statistics Office. It is on a homepage, that we scrape using the `{rvest}` package.
 
 ```{r}
 crime_url <- "https://www.ksh.hu/stadat_files/iga/hu/iga0003.html"
@@ -45,10 +45,12 @@ crime_raw |>
     slice(2) |> 
     unlist() |> 
     unname()
+```
 
-# I pasted it to deepl to machine translate the category names. 
-# I created and saved a text file that contains the English category names.
+I pasted it to deepl to machine translate the category names.
+I created and saved a text file that contains the English category names.
 
+```{r}
 crime_header <- read_lines(here::here("eng_header.txt"))
 
 # Now I can combine the raw data with the English header names
@@ -64,11 +66,13 @@ crime_wide <-
 # Create a long format dataset as well
 crime_long <- 
     crime_wide |> 
-    pivot_longer(-Year)
+    pivot_longer(-Year) |> 
+    # Convert categories to sentence case for pretty plots
+    mutate(name = str_to_sentence(name))
 
 ```
 
-
+Plot all categories to see trends.
 
 ```{r}
 
@@ -85,13 +89,13 @@ crime_long |>
 
 ```
 
-Looking at trends for individual categories
+# Looking at trends for individual categories
 
 ```{r}
 # Create specific datasets for individual regression analyses
 dui <- 
     crime_long |> 
-    filter(name == "drink/driving")
+    filter(name == "Drink/driving")
 
 total <-
     crime_long |> 
@@ -99,7 +103,7 @@ total <-
 
 drug <-
     crime_long |> 
-    filter(name == "drug offencesb")
+    filter(name == "Drug offencesb")
 
 ```
 
@@ -119,7 +123,9 @@ lm(scale(value) ~ scale(Year), data = drug) |>
 
 ```
 
-Fitting polynomial regression on the DUI data. We use the `poly()` function to include second and third order polinomials as predictors.
+# Modeling with polynomials
+
+Fitting polynomial regression on the DUI data. We use the `poly()` function to include second and third order polynomials as predictors. See details on how the funciton works here: https://stackoverflow.com/questions/19484053/what-does-the-r-function-poly-really-do 
 
 ```{r}
 dui_model <- 
@@ -131,6 +137,19 @@ summary(dui_model)
 # The tidy function returns the coefficients as a data frame.
 tidy(dui_model, conf.int = TRUE)
 ```
+
+You can create pretty model summary in html format using the following function.
+
+```{r}
+sjPlot::tab_model(dui_model)
+```
+
+Investigate the assumptions for linear model using the `{performance}` package.
+
+```{r}
+check_model(dui_model)
+```
+
 
 We can create predictions for the model using the `augment()` function from the `{broom}` package. if we use original data as new data, we can also include the original preditcors. 
 We can visualize the model predictions based on the model predictions.
@@ -147,7 +166,7 @@ augment(dui_model,
 ```
 
 
-## Automate modeling
+# Automate modeling
 
 We can also fit models to all separate outcomes in a few lines of code. R is a functional programming language that makes this easy, through the `map()` functions (that is part of `{tidyverse}`).
 
@@ -165,7 +184,7 @@ crime_nested <-
 
 # This is how you can reach data data
 crime_nested |> 
-    filter(name == "criminal mischief") |> 
+    filter(name == "Criminal mischief") |> 
     unnest(data)
 ```
 
@@ -177,22 +196,41 @@ We arrange the data by the size of the coefficient for the appropriate polynomia
 
 crime_nested |> 
     unnest(tidy_model) |> 
-    select(-data, -model) |> 
     filter(term =="poly(Year, 3)1") |> 
     arrange(estimate)
 
 crime_nested |> 
     unnest(tidy_model) |> 
-    select(-data, -model) |> 
     filter(term =="poly(Year, 3)2") |> 
     arrange(estimate)
 
 crime_nested |> 
     unnest(tidy_model) |> 
-    select(-data, -model) |> 
     filter(term =="poly(Year, 3)3") |> 
     arrange(estimate)
 
 ```
 
+Plot the results for each polynomial.
+
+```{r fig.height=9, fig.width=9}
+
+crime_nested |> 
+    unnest(tidy_model) |> 
+    filter(term !="(Intercept)") |> 
+    select(name, term, estimate, conf.low, conf.high) |> 
+    # Using regex to get rid of the complicated parts of the polyonomial terms
+    mutate(term = str_remove_all(term, "poly\\(Year, 3|\\)"),
+    # Make the name variable a reordered factor, so it is arranged on the plot
+           name = reorder_within(name, by = estimate, within = term)) |> 
+    ggplot() +
+    aes(x = estimate, y = name, xmin = conf.low, xmax = conf.high) +
+    # Add a reference line for no effect
+    geom_vline(xintercept = 0, lty = "dashed", color = "red") +
+    geom_pointrange() +
+    facet_wrap(~term, nrow = 3, scales = "free_y") +
+    # This is needed for the faceted rearrangement
+    scale_y_reordered() +
+    labs(y = NULL, title = "Show wihch polinomial (1, 2, or 3) of year fits the best to the data")
+```
 
